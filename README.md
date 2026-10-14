@@ -36,6 +36,24 @@ High-throughput systems programming in Go often requires SIMD vectorization (AVX
 - **Companion Stub Generation**: Emits strongly-typed Go companion `.go` files with `//go:noescape` annotations.
 - **WSL Integration**: Native Windows support with optional `--wsl` flag for compiling via Linux Clang inside WSL.
 
+## ⚠️ Architectural Constraints & Design Rules
+
+`c2plan9` is specifically engineered for **computational SIMD microkernels**, not as a general-purpose C compiler replacement. When authoring C source kernels, adhere to the following architectural invariants:
+
+1. **Leaf Functions Only**:
+   - C kernels must be pure leaf functions. They cannot call external functions (`call foo`), use standard library routines (`printf`, `memcpy`, `malloc`), or trigger system calls.
+   - All external memory must be passed directly via pointer arguments from Go.
+2. **Parameter Limits**:
+   - **AMD64**: Maximum 6 integer/pointer arguments (passed via System V registers: `RDI`, `RSI`, `RDX`, `RCX`, `R8`, `R9`).
+   - **ARM64**: Maximum 8 integer/pointer arguments (passed via AAPCS64 registers: `R0`–`R7`).
+   - *Note*: A Go slice occupies 3 parameter slots (`ptr`, `len`, `cap`). For kernels requiring numerous buffers, pass structured pointer wrappers.
+3. **Pointers for Vector Buffers**:
+   - SIMD vectors should be passed by pointer (`const uint8_t* in`, `const __m256i* data`), not by value in parameter lists. Return vectors by value (`-ret=m256` or `-ret=m128`) are fully supported.
+4. **No Jump Tables**:
+   - Dense `switch` statements must avoid jump tables. `c2plan9` automatically passes `-fno-jump-tables` to Clang, forcing binary search branching (`CMP`/`JE`) which cleanly relocates into Plan 9.
+5. **Freestanding Environment**:
+   - Compiles with `-ffreestanding`, `-fno-stack-protector`, and `-fomit-frame-pointer`. No C runtime (CRT) initialization exists.
+
 ## 📦 Installation
 
 ```bash
