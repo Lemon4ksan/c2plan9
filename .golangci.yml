@@ -1,0 +1,104 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+    - golines
+
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/lemon4ksan/c2plan9)
+
+    gofumpt:
+      module-path: github.com/lemon4ksan/c2plan9
+      extra:
+        group-params: true
+
+    goimports:
+      local-prefixes:
+        - github.com/lemon4ksan/c2plan9
+
+    golines:
+      max-len: 120
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - revive
+    - bodyclose
+    - nilerr
+    - noctx
+    - errorlint
+    - protogetter
+    - gocritic
+    - prealloc
+    - perfsprint
+    - gosec
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+    gocritic:
+      disabled-checks:
+        - captLocal
+        - elseif
+        - ifElseChain
+        - unlambda
+
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      - linters: [errcheck, revive, staticcheck, protogetter]
+        path: .*(pb\.go|generated\.go)
+
+      - linters: [errcheck]
+        text: "Error return value of `(fmt\\.Fprint|fmt\\.Fprintf|fmt\\.Fprintln|w\\.Write)` is not checked"
+
+      - linters: [gosec]
+        text: "G103:"
+
+      - linters: [gosec]
+        text: "G104:"
+
+      - linters: [gosec]
+        text: "G404:"
+
+      - linters: [gosec]
+        text: "G115:"
+
+      - linters: [gosec]
+        text: "G204:"
+
+      - linters: [gosec]
+        text: "G306:|G301:"
+
+      - linters: [revive]
+        path: "_test\\.go"
+        text: "exported: (exported|comment on exported)"
+
+      - linters: [gosec, noctx, bodyclose, errcheck, prealloc, staticcheck, errorlint, gocritic, unused, perfsprint, ineffassign]
+        path: "_test\\.go"
+
+      - linters: [gosec]
+        text: "G703:|G706:"
+        path: "(cmd|scripts|tools)[/\\\\].*"

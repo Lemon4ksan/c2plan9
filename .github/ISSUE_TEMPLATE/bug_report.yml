@@ -1,0 +1,47 @@
+name: "Bug Report"
+description: "File a bug report or disassembly translation issue in c2plan9"
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue in c2plan9.
+        Please make sure your report contains sufficient detail for reproduction.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal C Source & Flags
+      description: Provide minimal C code and c2plan9 CLI flags to reproduce the error.
+      render: c
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Plan 9 Assembly
+      description: What Plan 9 assembly instructions did you expect to see?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Plan 9 Assembly / Error Log
+      description: What was emitted, or what compilation error occurred?
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: "OS, Target architecture (amd64/arm64), Clang version (`clang --version`), Go version."
+    validations:
+      required: true

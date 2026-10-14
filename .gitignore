@@ -1,0 +1,28 @@
+# Build & Test Artifacts
+bin/
+.tmp/
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+*.pprof
+*.prof
+*.sarif
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+
+# Test binary, built with `go test -c`
+*.test
+
+# Agent workspace artifacts
+teamwork_projects/
+.agents/*
+!.agents/GEMINI.md
+scratch/

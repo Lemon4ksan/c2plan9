@@ -1,0 +1,30 @@
+name: "Feature Request"
+description: "Suggest an improvement, new instruction mnemonic, or target architecture for c2plan9"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an improvement for c2plan9.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Motivation
+      description: What intrinsic function, vector opcode, or compiler pipeline inspires this request?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution & Instruction Mapping
+      description: Describe the expected opcode mapping from x86asm/arm64asm into Go Plan 9 assembly.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative implementations or workarounds?
+    validations:
+      false
