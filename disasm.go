@@ -13,26 +13,204 @@ import (
 	"golang.org/x/arch/x86/x86asm"
 )
 
-// DisassembledInst represents a single disassembled machine instruction.
+const (
+	// minStackAlignAMD64 defines the minimum 16-byte stack alignment required by Go's AMD64 ABI.
+	minStackAlignAMD64 = 16
+
+	// defaultAVXAlignAMD64 defines the 32-byte stack alignment required for 256-bit AVX/AVX2 vector operations.
+	defaultAVXAlignAMD64 = 32
+
+	// vzeroupperLen defines the exact byte length of the VZEROUPPER instruction (0xC5 0xF8 0x77).
+	vzeroupperLen = 3
+
+	// rexPrefixMask isolates the high nibble of an instruction prefix to identify REX bytes (0x40..0x4F).
+	rexPrefixMask = 0xF0
+
+	// rexPrefixBase is the base byte value identifying an x86-64 REX prefix.
+	rexPrefixBase = 0x40
+
+	// rexWBit indicates a 64-bit operand width promotion in an x86-64 instruction.
+	rexWBit = 0x08
+)
+
+// DisassembledInst represents a single disassembled machine instruction with its offset, raw bytes,
+// normalized Plan 9 assembly representation, and associated metadata.
 type DisassembledInst struct {
-	Offset   uint64
-	Length   int
-	RawBytes []byte
-	Text     string
-	Label    string // non-empty if a label should be placed before this instruction
-	IsRet    bool
+	Offset   uint64 // Byte offset of instruction within the function symbol
+	Length   int    // Instruction length in bytes
+	RawBytes []byte // Raw machine code bytes
+	Text     string // Formatted Plan 9 assembly instruction text
+	Label    string // Optional local jump label (e.g. "L_0010") preceding this instruction
+	IsRet    bool   // True if the instruction is a subroutine return
 }
 
-// DisassemblyResult contains disassembled instructions and detected stack frame size.
+// DisassemblyResult contains the sequence of disassembled instructions and detected stack frame size.
 type DisassemblyResult struct {
-	Insts     []DisassembledInst
-	FrameSize uint64
+	Insts     []DisassembledInst // Sequence of disassembled instructions
+	FrameSize uint64             // Minimum required stack frame size in bytes
+}
+
+// vzeroupperSeq is the 3-byte VEX-encoded machine instruction for VZEROUPPER (VEX.128.0F.WIG 77).
+var vzeroupperSeq = []byte{0xC5, 0xF8, 0x77}
+
+// atntRegisterReplacer normalizes AT&T-style percent-prefixed register names to Plan 9 names.
+var atntRegisterReplacer = strings.NewReplacer(
+	"%rax", "AX",
+	"%rbx", "BX",
+	"%rcx", "CX",
+	"%rdx", "DX",
+	"%rsi", "SI",
+	"%rdi", "DI",
+	"%rbp", "BP",
+	"%rsp", "SP",
+	"%r8", "R8",
+	"%r9", "R9",
+	"%r10", "R10",
+	"%r11", "R11",
+	"%r12", "R12",
+	"%r13", "R13",
+	"%r14", "R14",
+	"%r15", "R15",
+)
+
+// setcc8BitRegs maps general-purpose register names to their 8-bit low byte equivalent for SETcc instructions.
+var setcc8BitRegs = map[string]string{
+	"AX":  "AL",
+	"BX":  "BL",
+	"CX":  "CL",
+	"DX":  "DL",
+	"SI":  "SIL",
+	"DI":  "DIL",
+	"BP":  "BPL",
+	"SP":  "SPL",
+	"R8":  "R8B",
+	"R9":  "R9B",
+	"R10": "R10B",
+	"R11": "R11B",
+	"R12": "R12B",
+	"R13": "R13B",
+	"R14": "R14B",
+	"R15": "R15B",
+}
+
+// eightBitRegs lists all 8-bit registers recognized in AMD64 machine code translations.
+var eightBitRegs = []string{
+	"AL",
+	"BL",
+	"CL",
+	"DL",
+	"SIL",
+	"DIL",
+	"BPL",
+	"SPL",
+	"R8B",
+	"R9B",
+	"R10B",
+	"R11B",
+	"R12B",
+	"R13B",
+	"R14B",
+	"R15B",
+}
+
+// sixtyFourBitRegs lists all 64-bit general-purpose registers recognized in AMD64 destination checks.
+var sixtyFourBitRegs = []string{
+	"AX",
+	"BX",
+	"CX",
+	"DX",
+	"SI",
+	"DI",
+	"BP",
+	"SP",
+	"R8",
+	"R9",
+	"R10",
+	"R11",
+	"R12",
+	"R13",
+	"R14",
+	"R15",
+}
+
+// byteOpSubstitutions translates 32-bit register operations to their 8-bit byte variants when 8-bit operands are detected.
+var byteOpSubstitutions = map[string]string{
+	"TESTL": "TESTB",
+	"CMPL":  "CMPB",
+	"MOVL":  "MOVB",
+	"ANDL":  "ANDB",
+	"ORL":   "ORB",
+	"XORL":  "XORB",
+	"ADDL":  "ADDB",
+	"SUBL":  "SUBB",
+	"SHRL":  "SHRB",
+	"SHLL":  "SHLB",
+	"SARL":  "SARB",
 }
 
 // AMD64Disassembler bridges DisassembleAMD64 to the Disassembler interface.
 var AMD64Disassembler Disassembler = DisassemblerFunc(DisassembleAMD64)
 
-// DisassembleAMD64 disassembles raw x86-64 machine code into Plan 9 assembly lines.
+// cmovConditions maps x86 conditional move mnemonics to their Plan 9 condition suffixes.
+var cmovConditions = map[string]string{
+	"CMOVAE": "CC",
+	"CMOVB":  "CS",
+	"CMOVE":  "EQ",
+	"CMOVNE": "NE",
+	"CMOVG":  "GT",
+	"CMOVGE": "GE",
+	"CMOVL":  "LT",
+	"CMOVLE": "LE",
+	"CMOVNS": "PL",
+	"CMOVS":  "MI",
+}
+
+// setccMnemonicMap maps x86 SETcc mnemonics to Plan 9 assembler equivalents.
+var setccMnemonicMap = map[string]string{
+	"SETNS": "SETPL",
+	"SETS":  "SETMI",
+	"SETE":  "SETEQ",
+	"SETAE": "SETCC",
+	"SETB":  "SETCS",
+	"SETA":  "SETHI",
+	"SETBE": "SETLS",
+	"SETL":  "SETLT",
+	"SETG":  "SETGT",
+	"SETNE": "SETNE",
+}
+
+// mnemonicAliasesAMD64 maps x86-64 mnemonics to Plan 9 assembler equivalents.
+var mnemonicAliasesAMD64 = map[string]string{
+	"MOVZX":  "MOVBLZX",
+	"MOVSX":  "MOVBLSX",
+	"MOVSXD": "MOVLQSX",
+	"TZCNT":  "TZCNTL",
+	"BSF":    "BSFL",
+	"BSR":    "BSRL",
+	"LZCNT":  "LZCNTL",
+	"POPCNT": "POPCNTL",
+}
+
+// doubleRegs lists accidental duplicate 'B' suffixes produced by intermediate register naming translations.
+var doubleRegs = []string{
+	"R8BB",
+	"R9BB",
+	"R10BB",
+	"R11BB",
+	"R12BB",
+	"R13BB",
+	"R14BB",
+	"R15BB",
+	"ALB",
+	"BLB",
+	"CLB",
+	"DLB",
+}
+
+// DisassembleAMD64 disassembles raw x86-64 machine code into Plan 9 assembly instructions.
+// It executes a two-pass analysis: Pass 1 discovers branch targets and generates local labels,
+// while Pass 2 translates instructions, strips callee-saved frame register saves, preserves
+// dynamic stack alignment, and resolves rodata relocations.
 func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (DisassemblyResult, error) {
 	var (
 		insts       []DisassembledInst
@@ -52,14 +230,15 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 		}
 
 		if isVZeroUpper(code, offset) {
-			inst.Len = 3
+			inst.Len = vzeroupperLen
 		}
 
 		pc := uint64(offset)
 		for _, arg := range inst.Args {
 			if rel, ok := arg.(x86asm.Rel); ok {
-				target := uint64(int64(pc) + int64(inst.Len) + int64(rel))
-				if target <= uint64(n) && target > 0 {
+				targetOffset := int64(pc) + int64(inst.Len) + int64(rel)
+				if targetOffset >= 0 && targetOffset <= int64(n) {
+					target := uint64(targetOffset)
 					if _, exists := jumpTargets[target]; !exists {
 						jumpTargets[target] = fmt.Sprintf("L_%04x", target)
 					}
@@ -99,7 +278,7 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 
 		// Fix x86asm decoder bug: VZEROUPPER (C5 F8 77) has no ModR/M byte (length is always 3)
 		if isVZeroUpper(code, offset) {
-			inst.Len = 3
+			inst.Len = vzeroupperLen
 		}
 
 		raw := code[offset : offset+inst.Len]
@@ -123,8 +302,7 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 		if matchedReloc != nil &&
 			(matchedReloc.IsROData || strings.HasPrefix(matchedReloc.SymName, ".rodata") || strings.HasPrefix(matchedReloc.SymName, ".LC")) {
 			text = replaceIPWithROData(text, matchedReloc.Addend)
-		} else if strings.Contains(text, "(IP)") ||
-			strings.Contains(text, "(RIP)") {
+		} else if strings.Contains(text, "(IP)") || strings.Contains(text, "(RIP)") {
 			for _, arg := range inst.Args {
 				if mem, ok := arg.(x86asm.Mem); ok && mem.Base == x86asm.RIP {
 					text = replaceIPWithROData(text, int64(mem.Disp))
@@ -133,12 +311,12 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 		}
 
 		if inst.Op == x86asm.BSWAP && strings.HasPrefix(text, "BSWAP") {
-			hasRexW := len(raw) >= 3 && (raw[0]&0xF8 == 0x48)
+			hasRex := len(raw) >= 3 && hasRexW(raw[0])
 			reg := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "BSWAPQ"), "BSWAPL"))
 			if strings.HasPrefix(text, "BSWAP ") {
 				reg = strings.TrimSpace(text[6:])
 			}
-			if hasRexW {
+			if hasRex {
 				text = "BSWAPQ " + reg
 			} else {
 				text = "BSWAPL " + reg
@@ -151,23 +329,11 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 				regStr := reg.String()
 				if is8BitRegStr(regStr) {
 					baseReg := strings.TrimSuffix(regStr, "B")
-					switch {
-					case strings.HasPrefix(text, "CMPL "):
-						text = "CMPB " + text[5:]
-					case strings.HasPrefix(text, "TESTL "):
-						text = "TESTB " + text[6:]
-					case strings.HasPrefix(text, "MOVL "):
-						text = "MOVB " + text[5:]
-					case strings.HasPrefix(text, "ANDL "):
-						text = "ANDB " + text[5:]
-					case strings.HasPrefix(text, "ADDL "):
-						text = "ADDB " + text[5:]
-					case strings.HasPrefix(text, "SUBL "):
-						text = "SUBB " + text[5:]
-					case strings.HasPrefix(text, "ORL "):
-						text = "ORB " + text[4:]
-					case strings.HasPrefix(text, "XORL "):
-						text = "XORB " + text[5:]
+					parts := strings.SplitN(text, " ", 2)
+					if len(parts) == 2 {
+						if bOp, ok := byteOpSubstitutions[parts[0]]; ok {
+							text = bOp + " " + parts[1]
+						}
 					}
 					if !strings.Contains(text, regStr) {
 						text = strings.ReplaceAll(text, " "+baseReg+",", " "+regStr+",")
@@ -190,20 +356,6 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 		}
 
 		// Normalize any possible duplicate 'B' suffixes (e.g. R11BB -> R11B)
-		doubleRegs := []string{
-			"R8BB",
-			"R9BB",
-			"R10BB",
-			"R11BB",
-			"R12BB",
-			"R13BB",
-			"R14BB",
-			"R15BB",
-			"ALB",
-			"BLB",
-			"CLB",
-			"DLB",
-		}
 		for _, dr := range doubleRegs {
 			text = strings.ReplaceAll(text, dr, strings.TrimSuffix(dr, "B"))
 		}
@@ -266,7 +418,7 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 		// If stack alignment is present, ensure frame size accounts for alignment padding.
 		if inst.Op == x86asm.AND && (strings.HasPrefix(text, "ANDQ $-") || strings.HasPrefix(text, "ANDL $-")) &&
 			strings.HasSuffix(text, ", SP") {
-			align := uint64(32)
+			align := uint64(defaultAVXAlignAMD64)
 			numStr := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(text, "ANDQ $-"), "ANDL $-"), ", SP")
 			if val, err := strconv.ParseUint(numStr, 10, 64); err == nil && val > 0 {
 				align = val
@@ -279,8 +431,8 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 					}
 				}
 			}
-			if align < 16 {
-				align = 16
+			if align < minStackAlignAMD64 {
+				align = minStackAlignAMD64
 			}
 			mask := align - 1
 			if frameSize < align {
@@ -308,36 +460,13 @@ func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 	}, nil
 }
 
-// cleanPlan9Syntax standardizes register and instruction syntax for Go's assembler.
+// cleanPlan9Syntax standardizes register and instruction syntax for Go's AMD64 assembler.
+// It normalizes AT&T register syntax, strips redundant symbol qualifiers, standardizes NOPs
+// and stack alignment directives, repairs 8-bit register naming artifacts, and applies
+// table-driven CMOVcc, SETcc, and mnemonic conversions.
 func cleanPlan9Syntax(s string) string {
 	s = strings.TrimSpace(s)
-
-	// Replace known register names if necessary
-	replacements := []struct {
-		old string
-		new string
-	}{
-		{"%rax", "AX"},
-		{"%rbx", "BX"},
-		{"%rcx", "CX"},
-		{"%rdx", "DX"},
-		{"%rsi", "SI"},
-		{"%rdi", "DI"},
-		{"%rbp", "BP"},
-		{"%rsp", "SP"},
-		{"%r8", "R8"},
-		{"%r9", "R9"},
-		{"%r10", "R10"},
-		{"%r11", "R11"},
-		{"%r12", "R12"},
-		{"%r13", "R13"},
-		{"%r14", "R14"},
-		{"%r15", "R15"},
-	}
-
-	for _, r := range replacements {
-		s = strings.ReplaceAll(s, r.old, r.new)
-	}
+	s = atntRegisterReplacer.Replace(s)
 
 	// Strip (SB) from local jump targets (e.g. JE L_0014(SB) -> JE L_0014)
 	if strings.Contains(s, "(SB)") && strings.Contains(s, "L_") {
@@ -370,224 +499,62 @@ func cleanPlan9Syntax(s string) string {
 		if len(parts) == 2 {
 			op := parts[0]
 			reg := strings.TrimSpace(parts[1])
-			switch reg {
-			case "AX":
-				reg = "AL"
-			case "BX":
-				reg = "BL"
-			case "CX":
-				reg = "CL"
-			case "DX":
-				reg = "DL"
-			case "SI":
-				reg = "SIL"
-			case "DI":
-				reg = "DIL"
-			case "BP":
-				reg = "BPL"
-			case "SP":
-				reg = "SPL"
-			case "R8":
-				reg = "R8B"
-			case "R9":
-				reg = "R9B"
-			case "R10":
-				reg = "R10B"
-			case "R11":
-				reg = "R11B"
-			case "R12":
-				reg = "R12B"
-			case "R13":
-				reg = "R13B"
-			case "R14":
-				reg = "R14B"
-			case "R15":
-				reg = "R15B"
+			if b8, ok := setcc8BitRegs[reg]; ok {
+				s = op + " " + b8
 			}
-			s = op + " " + reg
 		}
 	}
 
 	// Fix 8-bit register suffixes/prefixes (e.g. CMPL DL, $160 -> CMPB DL, $160)
-	eightBitRegs := []string{
-		"AL",
-		"BL",
-		"CL",
-		"DL",
-		"SIL",
-		"DIL",
-		"BPL",
-		"SPL",
-		"R8B",
-		"R9B",
-		"R10B",
-		"R11B",
-		"R12B",
-		"R13B",
-		"R14B",
-		"R15B",
-	}
 	for _, reg := range eightBitRegs {
 		if strings.Contains(s, " "+reg+",") || strings.HasSuffix(s, ", "+reg) || strings.HasSuffix(s, " "+reg) {
-			switch {
-			case strings.HasPrefix(s, "TESTL "):
-				s = "TESTB " + s[6:]
-			case strings.HasPrefix(s, "CMPL "):
-				s = "CMPB " + s[5:]
-			case strings.HasPrefix(s, "MOVL "):
-				s = "MOVB " + s[5:]
-			case strings.HasPrefix(s, "ANDL "):
-				s = "ANDB " + s[5:]
-			case strings.HasPrefix(s, "ORL "):
-				s = "ORB " + s[4:]
-			case strings.HasPrefix(s, "XORL "):
-				s = "XORB " + s[5:]
-			case strings.HasPrefix(s, "ADDL "):
-				s = "ADDB " + s[5:]
-			case strings.HasPrefix(s, "SUBL "):
-				s = "SUBB " + s[5:]
-			case strings.HasPrefix(s, "SHRL "):
-				s = "SHRB " + s[5:]
-			case strings.HasPrefix(s, "SHLL "):
-				s = "SHLB " + s[5:]
-			case strings.HasPrefix(s, "SARL "):
-				s = "SARB " + s[5:]
+			parts := strings.SplitN(s, " ", 2)
+			if len(parts) == 2 {
+				if bOp, ok := byteOpSubstitutions[parts[0]]; ok {
+					s = bOp + " " + parts[1]
+				}
 			}
 		}
-	}
-
-	sixtyFourBitRegs := []string{
-		"AX",
-		"BX",
-		"CX",
-		"DX",
-		"SI",
-		"DI",
-		"BP",
-		"SP",
-		"R8",
-		"R9",
-		"R10",
-		"R11",
-		"R12",
-		"R13",
-		"R14",
-		"R15",
-	}
-	is64Dest := func(str string) bool {
-		parts := strings.Split(str, ",")
-		if len(parts) >= 2 {
-			dest := strings.TrimSpace(parts[len(parts)-1])
-			if slices.Contains(sixtyFourBitRegs, dest) {
-				return true
-			}
-		}
-		return false
 	}
 
 	// Mnemonic translations for Go's Plan 9 assembler
-	switch {
-	case strings.HasPrefix(s, "MOVZX "):
-		s = "MOVBLZX " + s[6:]
-	case strings.HasPrefix(s, "MOVSX "):
-		s = "MOVBLSX " + s[6:]
-	case strings.HasPrefix(s, "MOVSXD "):
-		s = "MOVLQSX " + s[7:]
-	case strings.HasPrefix(s, "CMOVAE "):
-		if is64Dest(s) {
-			s = "CMOVQCC " + s[7:]
-		} else {
-			s = "CMOVLCC " + s[7:]
+	parts := strings.SplitN(s, " ", 2)
+	if len(parts) == 2 {
+		op := parts[0]
+		args := parts[1]
+
+		if cc, ok := cmovConditions[op]; ok {
+			if is64Dest(s) {
+				s = "CMOVQ" + cc + " " + args
+			} else {
+				s = "CMOVL" + cc + " " + args
+			}
+		} else if repl, ok := setccMnemonicMap[op]; ok {
+			s = repl + " " + args
+		} else if repl, ok := mnemonicAliasesAMD64[op]; ok {
+			s = repl + " " + args
 		}
-	case strings.HasPrefix(s, "CMOVB "):
-		if is64Dest(s) {
-			s = "CMOVQCS " + s[6:]
-		} else {
-			s = "CMOVLCS " + s[6:]
-		}
-	case strings.HasPrefix(s, "CMOVE "):
-		if is64Dest(s) {
-			s = "CMOVQEQ " + s[6:]
-		} else {
-			s = "CMOVLEQ " + s[6:]
-		}
-	case strings.HasPrefix(s, "CMOVNE "):
-		if is64Dest(s) {
-			s = "CMOVQNE " + s[7:]
-		} else {
-			s = "CMOVLNE " + s[7:]
-		}
-	case strings.HasPrefix(s, "CMOVG "):
-		if is64Dest(s) {
-			s = "CMOVQGT " + s[6:]
-		} else {
-			s = "CMOVLGT " + s[6:]
-		}
-	case strings.HasPrefix(s, "CMOVGE "):
-		if is64Dest(s) {
-			s = "CMOVQGE " + s[7:]
-		} else {
-			s = "CMOVLGE " + s[7:]
-		}
-	case strings.HasPrefix(s, "CMOVL "):
-		if is64Dest(s) {
-			s = "CMOVQLT " + s[6:]
-		} else {
-			s = "CMOVLLT " + s[6:]
-		}
-	case strings.HasPrefix(s, "CMOVLE "):
-		if is64Dest(s) {
-			s = "CMOVQLE " + s[7:]
-		} else {
-			s = "CMOVLLE " + s[7:]
-		}
-	case strings.HasPrefix(s, "CMOVNS "):
-		if is64Dest(s) {
-			s = "CMOVQPL " + s[7:]
-		} else {
-			s = "CMOVLPL " + s[7:]
-		}
-	case strings.HasPrefix(s, "CMOVS "):
-		if is64Dest(s) {
-			s = "CMOVQMI " + s[6:]
-		} else {
-			s = "CMOVLMI " + s[6:]
-		}
-	case strings.HasPrefix(s, "TZCNT "):
-		s = "TZCNTL " + s[6:]
-	case strings.HasPrefix(s, "BSF "):
-		s = "BSFL " + s[4:]
-	case strings.HasPrefix(s, "BSR "):
-		s = "BSRL " + s[4:]
-	case strings.HasPrefix(s, "LZCNT "):
-		s = "LZCNTL " + s[6:]
-	case strings.HasPrefix(s, "POPCNT "):
-		s = "POPCNTL " + s[7:]
-	case strings.HasPrefix(s, "SETNS "):
-		s = "SETPL " + s[6:]
-	case strings.HasPrefix(s, "SETS "):
-		s = "SETMI " + s[5:]
-	case strings.HasPrefix(s, "SETE "):
-		s = "SETEQ " + s[5:]
-	case strings.HasPrefix(s, "SETAE "):
-		s = "SETCC " + s[6:]
-	case strings.HasPrefix(s, "SETB "):
-		s = "SETCS " + s[5:]
-	case strings.HasPrefix(s, "SETA "):
-		s = "SETHI " + s[5:]
-	case strings.HasPrefix(s, "SETBE "):
-		s = "SETLS " + s[6:]
-	case strings.HasPrefix(s, "SETL "):
-		s = "SETLT " + s[5:]
-	case strings.HasPrefix(s, "SETG "):
-		s = "SETGT " + s[5:]
-	case strings.HasPrefix(s, "SETNE "):
-		s = "SETNE " + s[6:]
 	}
 
 	return s
 }
 
+// hasRexW reports whether the given instruction prefix byte is a REX prefix with the 64-bit operand size bit (REX.W) set.
+func hasRexW(prefix byte) bool {
+	return (prefix&rexPrefixMask) == rexPrefixBase && (prefix&rexWBit) != 0
+}
+
+// is64Dest reports whether the destination operand in a comma-separated instruction string is a 64-bit register.
+func is64Dest(str string) bool {
+	parts := strings.Split(str, ",")
+	if len(parts) >= 2 {
+		dest := strings.TrimSpace(parts[len(parts)-1])
+		return slices.Contains(sixtyFourBitRegs, dest)
+	}
+	return false
+}
+
+// is8BitRegStr reports whether the given register name represents an 8-bit x86 register.
 func is8BitRegStr(r string) bool {
 	switch r {
 	case "AL", "BL", "CL", "DL", "AH", "BH", "CH", "DH",
@@ -598,6 +565,7 @@ func is8BitRegStr(r string) bool {
 	return false
 }
 
+// isBranchOp reports whether the specified x86asm opcode represents a branch or jump instruction.
 func isBranchOp(op x86asm.Op) bool {
 	switch op {
 	case x86asm.CALL, x86asm.JMP,
@@ -611,6 +579,9 @@ func isBranchOp(op x86asm.Op) bool {
 	return false
 }
 
+// replaceIPWithROData rewrites instruction text containing (IP) or (RIP) relative memory operands
+// to reference the local static read-only data symbol ·rodata<>(SB) with the given addend offset,
+// maintaining proper operand spacing and comma separation.
 func replaceIPWithROData(text string, addend int64) string {
 	var roTarget string
 	if addend > 0 {
@@ -624,8 +595,9 @@ func replaceIPWithROData(text string, addend int64) string {
 	parts := strings.SplitN(text, " ", 2)
 	if len(parts) == 2 {
 		op := parts[0]
-		args := strings.Split(parts[1], ",")
-		for i, arg := range args {
+		rawArgs := strings.Split(parts[1], ",")
+		args := make([]string, len(rawArgs))
+		for i, arg := range rawArgs {
 			a := strings.TrimSpace(arg)
 			if strings.Contains(a, "(IP)") || strings.Contains(a, "(RIP)") {
 				args[i] = roTarget
@@ -638,11 +610,10 @@ func replaceIPWithROData(text string, addend int64) string {
 	return text
 }
 
-var vzeroupperSeq = []byte{0xC5, 0xF8, 0x77}
-
+// isVZeroUpper reports whether the machine code at the given offset matches the 3-byte VZEROUPPER sequence.
 func isVZeroUpper(code []byte, offset int) bool {
-	if offset+3 <= len(code) {
-		return slices.Equal(code[offset:offset+3], vzeroupperSeq)
+	if offset+vzeroupperLen <= len(code) {
+		return slices.Equal(code[offset:offset+vzeroupperLen], vzeroupperSeq)
 	}
 	return false
 }

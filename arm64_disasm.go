@@ -15,7 +15,48 @@ import (
 // ARM64Disassembler bridges DisassembleARM64 to the Disassembler interface.
 var ARM64Disassembler Disassembler = DisassemblerFunc(DisassembleARM64)
 
+const (
+	// arm64InstSize defines the fixed 4-byte instruction width of the AArch64 architecture.
+	arm64InstSize = 4
+)
+
+// arm64DirectOpMap translates AArch64 instruction mnemonics directly to their Plan 9 equivalents.
+var arm64DirectOpMap = map[string]string{
+	// Unscaled Loads (LDUR -> MOV)
+	"LDURBW":  "MOVBU",
+	"LDURB":   "MOVBU",
+	"LDURSBW": "MOVB",
+	"LDURSB":  "MOVB",
+	"LDURHW":  "MOVHU",
+	"LDURH":   "MOVHU",
+	"LDURSHW": "MOVH",
+	"LDURSH":  "MOVH",
+	"LDURW":   "MOVW",
+	"LDURSW":  "MOVW",
+	"LDURD":   "FMOVD",
+	"LDURS":   "FMOVS",
+	"LDURQ":   "FMOVQ",
+
+	// Unscaled Stores (STUR -> MOV)
+	"STURBW": "MOVB",
+	"STURB":  "MOVB",
+	"STURHW": "MOVH",
+	"STURH":  "MOVH",
+	"STURW":  "MOVW",
+	"STURD":  "FMOVD",
+	"STURS":  "FMOVS",
+	"STURQ":  "FMOVQ",
+
+	// Across-vector NEON reductions
+	"VMAXV": "UMAXV",
+	"VMINV": "UMINV",
+	"VADDV": "ADDV",
+}
+
 // DisassembleARM64 disassembles raw AArch64 machine code into Plan 9 ARM64 assembly lines.
+// It performs a two-pass decode: Pass 1 discovers branch targets and generates local labels,
+// while Pass 2 translates opcodes into Plan 9 ARM64 syntax, detects stack frame allocation
+// in prologues, elides frame pointer/link register saves, and rewrites rodata relocations.
 func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (DisassemblyResult, error) {
 	var (
 		insts       []DisassembledInst
@@ -26,18 +67,19 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 	)
 
 	// Pass 1: Discover all branch targets and assign clean label names
-	for offset+4 <= n {
-		inst, err := arm64asm.Decode(code[offset : offset+4])
+	for offset+arm64InstSize <= n {
+		inst, err := arm64asm.Decode(code[offset : offset+arm64InstSize])
 		if err != nil {
-			offset += 4
+			offset += arm64InstSize
 			continue
 		}
 
 		pc := uint64(offset)
 		for _, arg := range inst.Args {
 			if pcrel, ok := arg.(arm64asm.PCRel); ok {
-				target := uint64(int64(pc) + int64(pcrel))
-				if target <= uint64(n) && target > 0 {
+				targetOffset := int64(pc) + int64(pcrel)
+				if targetOffset >= 0 && targetOffset <= int64(n) {
+					target := uint64(targetOffset)
 					if _, exists := jumpTargets[target]; !exists {
 						jumpTargets[target] = fmt.Sprintf("L_%04x", target)
 					}
@@ -45,7 +87,7 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 			}
 		}
 
-		offset += 4
+		offset += arm64InstSize
 	}
 
 	// SymLookup callback for arm64asm.GoSyntax to resolve local labels
@@ -58,20 +100,20 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 
 	// Pass 2: Generate Plan 9 ARM64 syntax for each instruction
 	offset = 0
-	for offset+4 <= n {
+	for offset+arm64InstSize <= n {
 		pc := uint64(offset)
-		raw := code[offset : offset+4]
+		raw := code[offset : offset+arm64InstSize]
 		inst, err := arm64asm.Decode(raw)
 		if err != nil {
 			word := binary.LittleEndian.Uint32(raw)
 			insts = append(insts, DisassembledInst{
 				Offset:   pc,
-				Length:   4,
+				Length:   arm64InstSize,
 				RawBytes: raw,
 				Text:     fmt.Sprintf("WORD $0x%08x", word),
 				Label:    jumpTargets[pc],
 			})
-			offset += 4
+			offset += arm64InstSize
 			continue
 		}
 
@@ -88,13 +130,13 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 			if jumpTargets[pc] != "" {
 				insts = append(insts, DisassembledInst{
 					Offset:   pc,
-					Length:   4,
+					Length:   arm64InstSize,
 					RawBytes: raw,
 					Text:     "NOP",
 					Label:    jumpTargets[pc],
 				})
 			}
-			offset += 4
+			offset += arm64InstSize
 			continue
 		}
 
@@ -103,13 +145,13 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 			if jumpTargets[pc] != "" {
 				insts = append(insts, DisassembledInst{
 					Offset:   pc,
-					Length:   4,
+					Length:   arm64InstSize,
 					RawBytes: raw,
 					Text:     "NOP",
 					Label:    jumpTargets[pc],
 				})
 			}
-			offset += 4
+			offset += arm64InstSize
 			continue
 		}
 
@@ -119,13 +161,13 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 			if jumpTargets[pc] != "" {
 				insts = append(insts, DisassembledInst{
 					Offset:   pc,
-					Length:   4,
+					Length:   arm64InstSize,
 					RawBytes: raw,
 					Text:     "NOP",
 					Label:    jumpTargets[pc],
 				})
 			}
-			offset += 4
+			offset += arm64InstSize
 			continue
 		}
 
@@ -133,7 +175,7 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 		var matchedReloc *Relocation
 		for i := range relocs {
 			r := &relocs[i]
-			if r.Offset >= pc+baseOffset && r.Offset < pc+baseOffset+4 {
+			if r.Offset >= pc+baseOffset && r.Offset < pc+baseOffset+arm64InstSize {
 				matchedReloc = r
 				break
 			}
@@ -147,14 +189,14 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 
 		insts = append(insts, DisassembledInst{
 			Offset:   pc,
-			Length:   4,
+			Length:   arm64InstSize,
 			RawBytes: raw,
 			Text:     text,
 			Label:    jumpTargets[pc],
 			IsRet:    isRet,
 		})
 
-		offset += 4
+		offset += arm64InstSize
 	}
 
 	return DisassemblyResult{
@@ -164,6 +206,8 @@ func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (Disa
 }
 
 // cleanPlan9ARM64Syntax standardizes register and instruction syntax for Go's ARM64 assembler.
+// It normalizes SP to RSP, strips redundant symbol qualifiers from local branches, converts
+// unscaled load/store instructions, translates NEON reduction operations, and normalizes barriers.
 func cleanPlan9ARM64Syntax(s string) string {
 	s = strings.TrimSpace(s)
 
@@ -184,92 +228,53 @@ func cleanPlan9ARM64Syntax(s string) string {
 		s = strings.ReplaceAll(s, "(SB)", "")
 	}
 
-	// Translate unscaled loads, stores, vector reductions, and barriers
+	// Translate unscaled loads, stores, vector reductions, and barriers via table lookup
 	parts := strings.SplitN(s, " ", 2)
 	if len(parts) >= 1 {
 		op := parts[0]
 		args := ""
-
 		if len(parts) == 2 {
 			args = parts[1]
 		}
 
-		switch op {
-		// Unscaled Loads (LDUR -> MOV)
-		case "LDURBW", "LDURB":
-			return "MOVBU " + args
-		case "LDURSBW", "LDURSB":
-			return "MOVB " + args
-		case "LDURHW", "LDURH":
-			return "MOVHU " + args
-		case "LDURSHW", "LDURSH":
-			return "MOVH " + args
-		case "LDURW", "LDURSW":
-			return "MOVW " + args
-		case "LDUR":
-			if strings.Contains(args, "F") || strings.Contains(args, "V") || strings.Contains(args, "Q") {
-				return "FMOVQ " + args
-			}
+		if targetOp, ok := arm64DirectOpMap[op]; ok {
+			return targetOp + " " + args
+		}
 
-			return "MOVD " + args
-		case "LDURD":
-			return "FMOVD " + args
-		case "LDURS":
-			return "FMOVS " + args
-		case "LDURQ":
-			return "FMOVQ " + args
+		if op == "LDUR" || op == "STUR" {
+			return translateUnscaledLDURSTUR(op, args)
+		}
 
-		// Unscaled Stores (STUR -> MOV)
-		case "STURBW", "STURB":
-			return "MOVB " + args
-		case "STURHW", "STURH":
-			return "MOVH " + args
-		case "STURW":
-			return "MOVW " + args
-		case "STUR":
-			if strings.Contains(args, "F") || strings.Contains(args, "V") || strings.Contains(args, "Q") {
-				return "FMOVQ " + args
-			}
-
-			return "MOVD " + args
-		case "STURD":
-			return "FMOVD " + args
-		case "STURS":
-			return "FMOVS " + args
-		case "STURQ":
-			return "FMOVQ " + args
-
-		// Vector reductions / NEON across-vector operations
-		case "VMAXV":
-			return "UMAXV " + args
-		case "VMINV":
-			return "UMINV " + args
-		case "VADDV":
-			return "ADDV " + args
-
-		// Barrier cleanups
-		case "ISB":
-			if args == "$15" || args == "$0xf" || args == "15" {
-				return "ISB"
-			}
+		if op == "ISB" && (args == "$15" || args == "$0xf" || args == "15") {
+			return "ISB"
 		}
 	}
 
 	return s
 }
 
+// translateUnscaledLDURSTUR converts unscaled 64-bit LDUR/STUR instructions to either SIMD
+// vector (FMOVQ) or integer (MOVD) Plan 9 instructions based on operand register types.
+func translateUnscaledLDURSTUR(op, args string) string {
+	if strings.Contains(args, "F") || strings.Contains(args, "V") || strings.Contains(args, "Q") {
+		return "FMOVQ " + args
+	}
+	return "MOVD " + args
+}
+
+// replaceARM64ROData rewrites ARM64 ADRP, LDR, or MOVD instructions referencing static read-only data
+// to load the address of the Plan 9 ·rodata<>(SB) symbol into the destination register.
 func replaceARM64ROData(text string, addend int64) string {
 	roTarget := fmt.Sprintf("·rodata<>+%d(SB)", addend)
 	if addend == 0 {
 		roTarget = "·rodata<>(SB)"
 	}
 
-	parts := strings.Split(text, " ")
-	if len(parts) >= 2 {
+	parts := strings.SplitN(text, " ", 2)
+	if len(parts) == 2 {
 		op := parts[0]
 		if strings.HasPrefix(op, "ADRP") || strings.HasPrefix(op, "LDR") || strings.HasPrefix(op, "MOVD") {
-			argsStr := strings.Join(parts[1:], " ")
-			args := strings.Split(argsStr, ",")
+			args := strings.Split(parts[1], ",")
 			if len(args) >= 2 {
 				return fmt.Sprintf("MOVD $%s, %s", roTarget, strings.TrimSpace(args[len(args)-1]))
 			}
