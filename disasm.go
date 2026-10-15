@@ -29,6 +29,9 @@ type DisassemblyResult struct {
 	FrameSize uint64
 }
 
+// AMD64Disassembler bridges DisassembleAMD64 to the Disassembler interface.
+var AMD64Disassembler Disassembler = DisassemblerFunc(DisassembleAMD64)
+
 // DisassembleAMD64 disassembles raw x86-64 machine code into Plan 9 assembly lines.
 func DisassembleAMD64(code []byte, baseOffset uint64, relocs []Relocation) (DisassemblyResult, error) {
 	var (
@@ -609,23 +612,28 @@ func isBranchOp(op x86asm.Op) bool {
 }
 
 func replaceIPWithROData(text string, addend int64) string {
-	roTarget := fmt.Sprintf("·rodata<>+%d(SB)", addend)
-	if addend == 0 {
+	var roTarget string
+	if addend > 0 {
+		roTarget = fmt.Sprintf("·rodata<>+%d(SB)", addend)
+	} else if addend < 0 {
+		roTarget = fmt.Sprintf("·rodata<>%d(SB)", addend)
+	} else {
 		roTarget = "·rodata<>(SB)"
 	}
 
-	parts := strings.Split(text, " ")
-	if len(parts) >= 2 {
+	parts := strings.SplitN(text, " ", 2)
+	if len(parts) == 2 {
 		op := parts[0]
-		argsStr := strings.Join(parts[1:], " ")
-		args := strings.Split(argsStr, ",")
+		args := strings.Split(parts[1], ",")
 		for i, arg := range args {
 			a := strings.TrimSpace(arg)
 			if strings.Contains(a, "(IP)") || strings.Contains(a, "(RIP)") {
-				args[i] = " " + roTarget
+				args[i] = roTarget
+			} else {
+				args[i] = a
 			}
 		}
-		return op + strings.Join(args, ",")
+		return op + " " + strings.Join(args, ", ")
 	}
 	return text
 }

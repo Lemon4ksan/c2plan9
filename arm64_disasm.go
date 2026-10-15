@@ -12,6 +12,9 @@ import (
 	"golang.org/x/arch/arm64/arm64asm"
 )
 
+// ARM64Disassembler bridges DisassembleARM64 to the Disassembler interface.
+var ARM64Disassembler Disassembler = DisassemblerFunc(DisassembleARM64)
+
 // DisassembleARM64 disassembles raw AArch64 machine code into Plan 9 ARM64 assembly lines.
 func DisassembleARM64(code []byte, baseOffset uint64, relocs []Relocation) (DisassemblyResult, error) {
 	var (

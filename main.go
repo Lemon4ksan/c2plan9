@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -40,103 +39,46 @@ func run() error {
 		return errors.New("-c source file flag is required")
 	}
 
-	if *targetArch == "" {
-		if strings.Contains(*oFile, "_arm64") || strings.Contains(*cFile, "_arm64") {
-			*targetArch = "arm64"
-		} else {
-			*targetArch = "amd64"
-		}
-	}
-
-	if *oFile == "" {
-		base := strings.TrimSuffix(filepath.Base(*cFile), filepath.Ext(*cFile))
-		*oFile = filepath.Join(filepath.Dir(*cFile), base+"_"+*targetArch+".s")
-	}
-
-	if *pkgName == "" {
-		*pkgName = filepath.Base(filepath.Dir(*oFile))
-		if *pkgName == "." || *pkgName == "/" || *pkgName == "\\" {
-			*pkgName = "main"
-		}
-	}
-
 	var flags []string
 	if *extraFlags != "" {
 		flags = strings.Fields(*extraFlags)
 	}
 
-	fmt.Printf("[c2plan9] Compiling %s for %s via Clang/LLVM (WSL=%v)...\n", *cFile, *targetArch, *useWSL)
-	objPath, err := Compile(CompileOptions{
-		ClangPath:  *clangPath,
+	archName := *targetArch
+	if archName == "" {
+		if strings.Contains(*oFile, "_arm64") || strings.Contains(*cFile, "_arm64") {
+			archName = "arm64"
+		} else {
+			archName = "amd64"
+		}
+	}
+
+	pipeline, err := NewPipeline(archName)
+	if err != nil {
+		return err
+	}
+
+	cfg := PipelineConfig{
 		SourceFile: *cFile,
-		TargetArch: *targetArch,
+		OutputFile: *oFile,
+		StubFile:   *stubFile,
+		PkgName:    *pkgName,
+		ClangPath:  *clangPath,
 		ExtraFlags: flags,
-		TargetSysV: true,
+		TargetArch: archName,
 		UseWSL:     *useWSL,
-	})
+		RetType:    *retType,
+	}
+
+	fmt.Printf("[c2plan9] Compiling %s for %s via Clang/LLVM (WSL=%v)...\n", *cFile, archName, *useWSL)
+	res, err := pipeline.Execute(cfg)
 	if err != nil {
-		return fmt.Errorf("compilation failed: %w", err)
-	}
-	defer os.Remove(objPath)
-
-	fmt.Printf("[c2plan9] Parsing object file %s...\n", objPath)
-	obj, err := ParseObject(objPath)
-	if err != nil {
-		return fmt.Errorf("object parsing failed: %w", err)
+		return err
 	}
 
-	paramCount := 6
-	if *targetArch == "arm64" {
-		paramCount = 8
-	}
-
-	sigsMap := make(map[string]FuncSignature)
-	if *retType != "" {
-		rt := ReturnType(*retType)
-		hasRet := rt.Kind() != RetNone
-		for _, sym := range obj.Symbols {
-			if !sym.IsLocal {
-				sigsMap[sym.Name] = FuncSignature{
-					Name:       sym.Name,
-					ParamCount: paramCount,
-					HasReturn:  hasRet,
-					ReturnType: rt,
-				}
-			}
-		}
-	}
-
-	fmt.Printf("[c2plan9] Disassembling %d symbol(s) into Plan 9 %s assembly...\n", len(obj.Symbols), *targetArch)
-	asmBytes, err := EmitPlan9Assembly(*pkgName, obj.Symbols, sigsMap, obj.ROData, obj.Relocations, *targetArch)
-	if err != nil {
-		return fmt.Errorf("assembly generation failed: %w", err)
-	}
-
-	if err := os.WriteFile(*oFile, asmBytes, 0o644); err != nil {
-		return fmt.Errorf("failed to write %s: %w", *oFile, err)
-	}
-	fmt.Printf("[c2plan9] Successfully emitted %s (%d bytes)\n", *oFile, len(asmBytes))
-
-	if *stubFile != "" {
-		var sigs []FuncSignature
-		for _, sym := range obj.Symbols {
-			if !sym.IsLocal {
-				if sig, ok := sigsMap[sym.Name]; ok {
-					sigs = append(sigs, sig)
-				} else {
-					sigs = append(sigs, FuncSignature{
-						Name:       sym.Name,
-						ParamCount: paramCount,
-						HasReturn:  true,
-					})
-				}
-			}
-		}
-		stubBytes := EmitGoStub(*pkgName, sigs, *targetArch)
-		if err := os.WriteFile(*stubFile, stubBytes, 0o644); err != nil {
-			return fmt.Errorf("failed to write stub %s: %w", *stubFile, err)
-		}
-		fmt.Printf("[c2plan9] Successfully emitted Go stub %s\n", *stubFile)
+	fmt.Printf("[c2plan9] Successfully emitted %s (%d bytes)\n", res.OutputFile, len(res.AssemblyBytes))
+	if res.StubFile != "" {
+		fmt.Printf("[c2plan9] Successfully emitted Go stub %s\n", res.StubFile)
 	}
 
 	return nil
