@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,33 +30,73 @@ type CompileOptions struct {
 
 // Compile compiles a C/LLVM IR source file into a temporary object file using Clang.
 func Compile(opts CompileOptions) (string, error) {
-	clang := opts.ClangPath
-	if clang == "" {
-		clang = "clang"
+	return CompileContext(context.Background(), opts)
+}
+
+// CompileContext compiles a C/LLVM IR source file with context cancellation and timeout support.
+func CompileContext(ctx context.Context, opts CompileOptions) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
+
+	if strings.TrimSpace(opts.SourceFile) == "" {
+		return "", errors.New("source file path cannot be empty")
+	}
+
+	stat, err := os.Stat(opts.SourceFile)
+	if err != nil {
+		return "", fmt.Errorf("source file %q not found or inaccessible: %w", opts.SourceFile, err)
+	}
+	if stat.IsDir() {
+		return "", fmt.Errorf("source file %q is a directory, not a source file", opts.SourceFile)
+	}
+
+	arch := opts.TargetArch
+	if arch == "" {
+		arch = "amd64"
+	}
+	if arch != "amd64" && arch != "arm64" {
+		return "", fmt.Errorf("unsupported target architecture: %q (supported: amd64, arm64)", opts.TargetArch)
+	}
+	opts.TargetArch = arch
+
+	sanitizedFlags := make([]string, 0, len(opts.ExtraFlags))
+	for _, flag := range opts.ExtraFlags {
+		if strings.ContainsRune(flag, 0) {
+			return "", fmt.Errorf("invalid compiler flag containing null byte: %q", flag)
+		}
+		sanitizedFlags = append(sanitizedFlags, flag)
+	}
+	opts.ExtraFlags = sanitizedFlags
 
 	out := opts.OutputFile
 	if out == "" {
 		tmpDir := os.TempDir()
 		base := strings.TrimSuffix(filepath.Base(opts.SourceFile), filepath.Ext(opts.SourceFile))
-		out = filepath.Join(tmpDir, fmt.Sprintf("%s_%s_%d.o", base, opts.TargetArch, os.Getpid()))
-	}
-
-	useWSL := opts.UseWSL
-	if !useWSL && runtime.GOOS == "windows" && opts.TargetArch == "arm64" {
-		// Native Windows clang often lacks aarch64 target headers, check if WSL is requested
-		if opts.UseWSL {
-			useWSL = true
+		base = filepath.Base(base)
+		out = filepath.Join(tmpDir, fmt.Sprintf("%s_%s_%d.o", base, arch, os.Getpid()))
+	} else {
+		parent := filepath.Dir(out)
+		if parent != "" && parent != "." {
+			if err := os.MkdirAll(parent, 0o755); err != nil {
+				return "", fmt.Errorf("failed to create output directory %q: %w", parent, err)
+			}
 		}
 	}
 
-	if useWSL {
+	if opts.UseWSL {
 		wslSrc := toWSLPath(opts.SourceFile)
 		wslOut := toWSLPath(out)
-		target := ClangTarget(opts.TargetArch)
+		target := ClangTarget(arch)
+		wslClang := opts.ClangPath
+		if wslClang == "" {
+			wslClang = "clang"
+		} else if runtime.GOOS == "windows" && filepath.IsAbs(wslClang) {
+			wslClang = toWSLPath(wslClang)
+		}
 		wslArgs := make([]string, 0, 18+len(opts.ExtraFlags))
 		wslArgs = append(wslArgs,
-			"clang", "-c", wslSrc, "-o", wslOut,
+			wslClang, "-c", wslSrc, "-o", wslOut,
 			"-O3",
 			"-ffreestanding",
 			"-fno-asynchronous-unwind-tables",
@@ -66,7 +107,7 @@ func Compile(opts CompileOptions) (string, error) {
 			"-fno-jump-tables",
 			"-target", target,
 		)
-		if opts.TargetArch == "arm64" {
+		if arch == "arm64" {
 			wslArgs = append(wslArgs, "-march=armv8-a+simd+crypto")
 		} else {
 			wslArgs = append(wslArgs,
@@ -77,7 +118,7 @@ func Compile(opts CompileOptions) (string, error) {
 			)
 		}
 		wslArgs = append(wslArgs, opts.ExtraFlags...)
-		cmd := exec.CommandContext(context.Background(), "wsl", wslArgs...)
+		cmd := exec.CommandContext(ctx, "wsl", wslArgs...)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
@@ -86,9 +127,14 @@ func Compile(opts CompileOptions) (string, error) {
 		return out, nil
 	}
 
+	clang := opts.ClangPath
+	if clang == "" {
+		clang = "clang"
+	}
+
 	args := BuildClangArgs(opts, out)
 
-	cmd := exec.CommandContext(context.Background(), clang, args...)
+	cmd := exec.CommandContext(ctx, clang, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -103,9 +149,18 @@ func Compile(opts CompileOptions) (string, error) {
 func toWSLPath(winPath string) string {
 	cleaned := filepath.Clean(winPath)
 	if len(cleaned) >= 2 && cleaned[1] == ':' {
-		drive := strings.ToLower(string(cleaned[0]))
-		rest := filepath.ToSlash(cleaned[2:])
-		return "/mnt/" + drive + rest
+		driveLetter := cleaned[0]
+		if (driveLetter >= 'a' && driveLetter <= 'z') || (driveLetter >= 'A' && driveLetter <= 'Z') {
+			drive := strings.ToLower(string(driveLetter))
+			rest := filepath.ToSlash(cleaned[2:])
+			if !strings.HasPrefix(rest, "/") {
+				rest = "/" + rest
+			}
+			if rest == "/" {
+				return "/mnt/" + drive
+			}
+			return "/mnt/" + drive + rest
+		}
 	}
 	return filepath.ToSlash(cleaned)
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -45,27 +46,68 @@ type ParsedObject struct {
 
 // ParseObject parses a binary object file (.o) across ELF, PE, or Mach-O formats.
 func ParseObject(path string) (*ParsedObject, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("object file path cannot be empty")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read object file: %w", err)
 	}
 
-	// Try ELF first (standard output when targeting Linux/SysV)
+	if isELF(data) {
+		obj, err := parseELF(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse ELF object %s: %w", path, err)
+		}
+		return obj, nil
+	}
+
+	if isPE(data) {
+		obj, err := parsePE(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse PE object %s: %w", path, err)
+		}
+		return obj, nil
+	}
+
+	if isMachO(data) {
+		obj, err := parseMachO(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse Mach-O object %s: %w", path, err)
+		}
+		return obj, nil
+	}
+
+	// Fallback trial in case magic bytes detection missed a rare format variant
 	if obj, err := parseELF(data); err == nil {
 		return obj, nil
 	}
-
-	// Try PE (Windows native)
 	if obj, err := parsePE(data); err == nil {
 		return obj, nil
 	}
-
-	// Try Mach-O (macOS native)
 	if obj, err := parseMachO(data); err == nil {
 		return obj, nil
 	}
 
 	return nil, fmt.Errorf("unsupported object file format: %s", path)
+}
+
+func isELF(data []byte) bool {
+	return len(data) >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'
+}
+
+func isPE(data []byte) bool {
+	return len(data) >= 2 && data[0] == 'M' && data[1] == 'Z'
+}
+
+func isMachO(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	magic := binary.BigEndian.Uint32(data[0:4])
+	return magic == 0xfeedface || magic == 0xcefaedfe || // 32-bit Mach-O (BE, LE)
+		magic == 0xfeedfacf || magic == 0xcffaedfe || // 64-bit Mach-O (BE, LE)
+		magic == 0xcafebabe || magic == 0xbebafeca // Universal/Fat binary
 }
 
 func parseELF(data []byte) (*ParsedObject, error) {
@@ -105,11 +147,16 @@ func parseELF(data []byte) (*ParsedObject, error) {
 		if sym.Section == elf.SHN_UNDEF {
 			continue
 		}
+		secIdx := int(sym.Section)
 		// Function or STT_NOTYPE symbols with non-zero size or in .text
-		if int(sym.Section) < len(f.Sections) && f.Sections[sym.Section].Name == ".text" {
+		if secIdx >= 0 && secIdx < len(f.Sections) && f.Sections[secIdx].Name == ".text" {
 			if sym.Size > 0 {
+				// Guard against uint64 overflow: sym.Value + sym.Size
+				if sym.Value > ^uint64(0)-sym.Size {
+					continue
+				}
 				end := sym.Value + sym.Size
-				if end <= uint64(len(textBytes)) {
+				if sym.Value < uint64(len(textBytes)) && end <= uint64(len(textBytes)) && end > sym.Value {
 					funcSyms = append(funcSyms, Symbol{
 						Name:    sym.Name,
 						Offset:  sym.Value,
@@ -126,7 +173,8 @@ func parseELF(data []byte) (*ParsedObject, error) {
 	if len(funcSyms) == 0 {
 		var textSymbols []elf.Symbol
 		for _, sym := range syms {
-			if int(sym.Section) < len(f.Sections) && f.Sections[sym.Section].Name == ".text" && sym.Name != "" {
+			secIdx := int(sym.Section)
+			if secIdx >= 0 && secIdx < len(f.Sections) && f.Sections[secIdx].Name == ".text" && sym.Name != "" {
 				textSymbols = append(textSymbols, sym)
 			}
 		}
@@ -136,10 +184,16 @@ func parseELF(data []byte) (*ParsedObject, error) {
 
 		for i, sym := range textSymbols {
 			start := sym.Value
+			if start >= uint64(len(textBytes)) {
+				continue
+			}
 			var end uint64
 			if i+1 < len(textSymbols) {
 				end = textSymbols[i+1].Value
 			} else {
+				end = uint64(len(textBytes))
+			}
+			if end > uint64(len(textBytes)) {
 				end = uint64(len(textBytes))
 			}
 			if end > start && end <= uint64(len(textBytes)) {
@@ -158,14 +212,20 @@ func parseELF(data []byte) (*ParsedObject, error) {
 	for _, sec := range f.Sections {
 		if sec.Type == elf.SHT_RELA && sec.Info < uint32(len(f.Sections)) && f.Sections[sec.Info].Name == ".text" {
 			relaData, rErr := sec.Data()
-			if rErr == nil && len(relaData)%24 == 0 {
+			if rErr == nil && len(relaData) >= 24 && len(relaData)%24 == 0 && f.ByteOrder != nil {
 				r := bytes.NewReader(relaData)
 				for i := 0; i < len(relaData)/24; i++ {
 					var rOffset, rInfo uint64
 					var rAddend int64
-					_ = binary.Read(r, f.ByteOrder, &rOffset)
-					_ = binary.Read(r, f.ByteOrder, &rInfo)
-					_ = binary.Read(r, f.ByteOrder, &rAddend)
+					if err := binary.Read(r, f.ByteOrder, &rOffset); err != nil {
+						break
+					}
+					if err := binary.Read(r, f.ByteOrder, &rInfo); err != nil {
+						break
+					}
+					if err := binary.Read(r, f.ByteOrder, &rAddend); err != nil {
+						break
+					}
 
 					symIdx := int(rInfo >> 32)
 					var symName string
@@ -174,15 +234,16 @@ func parseELF(data []byte) (*ParsedObject, error) {
 					if symIdx >= 0 && symIdx < len(syms) {
 						s := syms[symIdx]
 						symName = s.Name
-						if int(s.Section) < len(f.Sections) {
-							targetSecName := f.Sections[s.Section].Name
+						sSec := int(s.Section)
+						if sSec >= 0 && sSec < len(f.Sections) {
+							targetSecName := f.Sections[sSec].Name
 							if strings.HasPrefix(targetSecName, ".rodata") {
 								isRO = true
 							}
 						}
 					}
 
-					if !isRO && symIdx < len(f.Sections) {
+					if !isRO && symIdx >= 0 && symIdx < len(f.Sections) {
 						if strings.HasPrefix(f.Sections[symIdx].Name, ".rodata") {
 							isRO = true
 						}
@@ -246,10 +307,16 @@ func parsePE(data []byte) (*ParsedObject, error) {
 
 	for i, sym := range peSymbols {
 		start := uint64(sym.Value)
+		if start >= uint64(len(textBytes)) {
+			continue
+		}
 		var end uint64
 		if i+1 < len(peSymbols) {
 			end = uint64(peSymbols[i+1].Value)
 		} else {
+			end = uint64(len(textBytes))
+		}
+		if end > uint64(len(textBytes)) {
 			end = uint64(len(textBytes))
 		}
 
@@ -338,13 +405,57 @@ func parseMachO(data []byte) (*ParsedObject, error) {
 
 	var funcSyms []Symbol
 	if f.Symtab != nil {
+		// Identify the 1-based section index of the __text section
+		var textSectIndex uint8
+		for idx, sec := range f.Sections {
+			if sec.Name == "__text" {
+				textSectIndex = uint8(idx + 1)
+				break
+			}
+		}
+
+		// Filter symbols belonging strictly to the __text section
+		var textSyms []macho.Symbol
 		for _, sym := range f.Symtab.Syms {
-			if sym.Sect > 0 && sym.Name != "" {
+			if textSectIndex > 0 && sym.Sect == textSectIndex && sym.Name != "" {
+				textSyms = append(textSyms, sym)
+			}
+		}
+
+		sort.Slice(textSyms, func(i, j int) bool {
+			return textSyms[i].Value < textSyms[j].Value
+		})
+
+		for i, sym := range textSyms {
+			offset := sym.Value
+			if offset >= textSec.Addr && textSec.Addr > 0 {
+				offset -= textSec.Addr
+			}
+			if offset >= uint64(len(textBytes)) {
+				continue
+			}
+
+			var end uint64
+			if i+1 < len(textSyms) {
+				nextOffset := textSyms[i+1].Value
+				if nextOffset >= textSec.Addr && textSec.Addr > 0 {
+					nextOffset -= textSec.Addr
+				}
+				if nextOffset > offset && nextOffset <= uint64(len(textBytes)) {
+					end = nextOffset
+				} else {
+					end = uint64(len(textBytes))
+				}
+			} else {
+				end = uint64(len(textBytes))
+			}
+
+			if end > offset && end <= uint64(len(textBytes)) {
 				funcSyms = append(funcSyms, Symbol{
 					Name:   sym.Name,
-					Offset: sym.Value,
-					Size:   uint64(len(textBytes)) - sym.Value,
-					Code:   textBytes[sym.Value:],
+					Offset: offset,
+					Size:   end - offset,
+					Code:   textBytes[offset:end],
 				})
 			}
 		}
@@ -361,10 +472,16 @@ func parseMachO(data []byte) (*ParsedObject, error) {
 type readerAtBytes []byte
 
 func (r readerAtBytes) ReadAt(p []byte, off int64) (n int, err error) {
+	if off < 0 {
+		return 0, errors.New("negative offset out of bounds")
+	}
 	if off >= int64(len(r)) {
-		return 0, errors.New("offset out of bounds")
+		return 0, io.EOF
 	}
 	n = copy(p, r[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
 	return n, nil
 }
 
