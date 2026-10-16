@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/lemon4ksan/c2plan9/arch"
 )
 
 const sampleCKernel = `
@@ -33,7 +35,7 @@ func TestC2Plan9EndToEnd(t *testing.T) {
 		t.Fatalf("failed to write C kernel: %v", err)
 	}
 
-	objPath, err := Compile(CompileOptions{
+	objPath, err := Compile(t.Context(), CompileOptions{
 		ClangPath:  "clang",
 		SourceFile: cFile,
 		TargetArch: "amd64",
@@ -159,4 +161,70 @@ go 1.25
 		t.Fatalf("go test failed on generated Plan 9 assembly (%v):\n%s", err, string(out))
 	}
 	t.Logf("go test on generated kernel passed:\n%s", string(out))
+}
+
+type mockCustomArch struct{}
+
+func (m *mockCustomArch) Name() string             { return "custom64" }
+func (m *mockCustomArch) ParamRegisters() []string { return []string{"A0", "A1"} }
+func (m *mockCustomArch) LoadOp() string           { return "LD" }
+func (m *mockCustomArch) DefaultParamCount() int   { return 2 }
+func (m *mockCustomArch) BuildTag() string         { return "//go:build custom64 && !purego" }
+func (m *mockCustomArch) ClangTarget() string      { return "custom64-linux-gnu" }
+func (m *mockCustomArch) ReturnPlacement(arch.ReturnKind) arch.ReturnPlacement {
+	return arch.ReturnPlacement{Op: "SD", Reg: "A0"}
+}
+
+func (m *mockCustomArch) Disassemble([]byte, uint64, []arch.Relocation) (arch.DisassemblyResult, error) {
+	return arch.DisassemblyResult{
+		Insts: []arch.DisassembledInst{
+			{Offset: 0, Length: 4, Text: "RET", IsRet: true},
+		},
+		FrameSize: 0,
+	}, nil
+}
+
+func TestCustomArchRegistration(t *testing.T) {
+	mock := &mockCustomArch{}
+	arch.Register(mock)
+
+	backend, err := arch.Get("custom64")
+	if err != nil {
+		t.Fatalf("failed to retrieve registered custom arch: %v", err)
+	}
+	if backend.Name() != "custom64" {
+		t.Fatalf("expected custom64, got %s", backend.Name())
+	}
+
+	syms := []Symbol{
+		{
+			Name: "custom_func",
+			Code: []byte{0x00, 0x00, 0x00, 0x00},
+		},
+	}
+
+	sigs := map[string]FuncSignature{
+		"custom_func": {
+			Name:       "custom_func",
+			GoName:     "CustomFunc",
+			ParamCount: 2,
+			HasReturn:  true,
+		},
+	}
+
+	asmBytes, err := EmitPlan9Assembly("testpkg", syms, sigs, nil, nil, "custom64")
+	if err != nil {
+		t.Fatalf("EmitPlan9Assembly failed with custom arch: %v", err)
+	}
+
+	asm := string(asmBytes)
+	if !strings.Contains(asm, "//go:build custom64 && !purego") {
+		t.Errorf("expected build tag for custom arch, got:\n%s", asm)
+	}
+	if !strings.Contains(asm, "LD arg0+0(FP), A0") {
+		t.Errorf("expected LD A0 param load, got:\n%s", asm)
+	}
+	if !strings.Contains(asm, "SD A0, ret+16(FP)") {
+		t.Errorf("expected SD return placement, got:\n%s", asm)
+	}
 }

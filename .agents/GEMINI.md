@@ -29,7 +29,6 @@ c2plan9/
 ├── objparser.go                      // ELF, Mach-O, and PE object format decoders
 ├── emitter.go                        // Plan 9 assembly emitter and Go stub generator
 ├── pipeline.go                       // Modular compilation and translation pipeline engine
-├── arch.go                           // Root architecture facade and re-exported types
 ├── disasm.go                         // Backward-compatible AMD64 facade
 ├── arm64_disasm.go                   // Backward-compatible ARM64 facade
 ├── doc.go                            // Package documentation

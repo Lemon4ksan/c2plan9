@@ -12,7 +12,7 @@ import (
 )
 
 func TestDisassembleARM64_RET(t *testing.T) {
-	backend, err := arch.GetArch("arm64")
+	backend, err := arch.Get("arm64")
 	if err != nil {
 		t.Fatalf("failed to get arm64 arch: %v", err)
 	}
@@ -115,5 +115,23 @@ func TestReplaceROData(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("ReplaceROData(%q, %d) = %q, want %q", tc.input, tc.addend, got, tc.expected)
 		}
+	}
+}
+
+func TestDisassembleARM64_BranchToZero(t *testing.T) {
+	// B 0 (branch to self at pc=0) in AArch64
+	code := []byte{0x00, 0x00, 0x00, 0x14}
+	res, err := arm64.Disassemble(code, 0, nil)
+	if err != nil {
+		t.Fatalf("Disassemble failed: %v", err)
+	}
+
+	if len(res.Insts) == 0 {
+		t.Fatalf("expected at least 1 instruction")
+	}
+
+	firstInst := res.Insts[0]
+	if firstInst.Label != "L_0000" {
+		t.Errorf("expected first instruction to have label L_0000, got %q", firstInst.Label)
 	}
 }

@@ -192,3 +192,22 @@ func TestIsVZeroUpper(t *testing.T) {
 		t.Errorf("expected IsVZeroUpper at offset 3 to be false (too short)")
 	}
 }
+
+func TestDisassembleAMD64_BranchToZero(t *testing.T) {
+	// JMP rel8 (-2): EB FE is an infinite jump back to self (offset 0)
+	code := []byte{0xEB, 0xFE}
+	res, err := amd64.Disassemble(code, 0, nil)
+	if err != nil {
+		t.Fatalf("Disassemble failed: %v", err)
+	}
+
+	if len(res.Insts) == 0 {
+		t.Fatalf("expected at least 1 instruction")
+	}
+
+	// Verify that target 0 received a clean label L_0000
+	firstInst := res.Insts[0]
+	if firstInst.Label != "L_0000" {
+		t.Errorf("expected first instruction to have label L_0000, got %q", firstInst.Label)
+	}
+}

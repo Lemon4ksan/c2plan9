@@ -5,11 +5,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 func main() {
@@ -53,6 +56,9 @@ func run() error {
 		}
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	pipeline, err := NewPipeline(archName)
 	if err != nil {
 		return err
@@ -71,7 +77,7 @@ func run() error {
 	}
 
 	fmt.Printf("[c2plan9] Compiling %s for %s via Clang/LLVM (WSL=%v)...\n", *cFile, archName, *useWSL)
-	res, err := pipeline.Execute(cfg)
+	res, err := pipeline.Execute(ctx, cfg)
 	if err != nil {
 		return err
 	}

@@ -5,11 +5,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/lemon4ksan/c2plan9/arch"
+	_ "github.com/lemon4ksan/c2plan9/arch/amd64"
+	_ "github.com/lemon4ksan/c2plan9/arch/arm64"
 )
 
 // PipelineConfig configures the execution of the c2plan9 translation pipeline.
@@ -38,12 +43,12 @@ type PipelineResult struct {
 // Pipeline coordinates the stages of compiling, parsing, disassembling,
 // and emitting Plan 9 assembly and companion Go stubs.
 type Pipeline struct {
-	backend ArchBackend
+	backend arch.Backend
 }
 
 // NewPipeline creates a new Pipeline for the specified architecture target.
-func NewPipeline(arch string) (*Pipeline, error) {
-	backend, err := GetArch(arch)
+func NewPipeline(targetArch string) (*Pipeline, error) {
+	backend, err := arch.Get(targetArch)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +56,7 @@ func NewPipeline(arch string) (*Pipeline, error) {
 }
 
 // Backend returns the underlying ArchBackend used by the pipeline.
-func (p *Pipeline) Backend() ArchBackend {
+func (p *Pipeline) Backend() arch.Backend {
 	return p.backend
 }
 
@@ -85,13 +90,13 @@ func (p *Pipeline) NormalizeConfig(cfg *PipelineConfig) error {
 }
 
 // Execute executes the complete translation pipeline: compile, parse, emit assembly, and emit stub.
-func (p *Pipeline) Execute(cfg PipelineConfig) (*PipelineResult, error) {
+func (p *Pipeline) Execute(ctx context.Context, cfg PipelineConfig) (*PipelineResult, error) {
 	if err := p.NormalizeConfig(&cfg); err != nil {
 		return nil, err
 	}
 
 	if cfg.TargetArch != p.backend.Name() {
-		backend, err := GetArch(cfg.TargetArch)
+		backend, err := arch.Get(cfg.TargetArch)
 		if err != nil {
 			return nil, err
 		}
@@ -99,7 +104,7 @@ func (p *Pipeline) Execute(cfg PipelineConfig) (*PipelineResult, error) {
 	}
 
 	// Step 1: Compile source to object file
-	objPath, err := Compile(CompileOptions{
+	objPath, err := Compile(ctx, CompileOptions{
 		ClangPath:  cfg.ClangPath,
 		SourceFile: cfg.SourceFile,
 		TargetArch: cfg.TargetArch,
@@ -146,7 +151,7 @@ func (p *Pipeline) TranslateObject(obj *ParsedObject, cfg PipelineConfig) (*Pipe
 	sigsMap := make(map[string]FuncSignature)
 	if cfg.RetType != "" {
 		rt := ReturnType(cfg.RetType)
-		hasRet := rt.Kind() != RetNone
+		hasRet := rt.Kind() != arch.RetNone
 		for _, sym := range obj.Symbols {
 			if !sym.IsLocal {
 				sigsMap[sym.Name] = FuncSignature{

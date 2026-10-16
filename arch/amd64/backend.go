@@ -65,5 +65,5 @@ func (b *Backend) Disassemble(
 }
 
 func init() {
-	arch.RegisterArch(New())
+	arch.Register(New())
 }

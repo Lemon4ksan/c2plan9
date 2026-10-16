@@ -124,20 +124,20 @@ func TestSeal_MachO_OOB_Symbol_PanicPoC(t *testing.T) {
 // architecture allowlisting, and flag validation in compiler.go.
 func TestSeal_Compiler_InputValidation(t *testing.T) {
 	// 1. Empty source file
-	_, err := Compile(CompileOptions{SourceFile: ""})
+	_, err := Compile(t.Context(), CompileOptions{SourceFile: ""})
 	if err == nil || !strings.Contains(err.Error(), "source file path cannot be empty") {
 		t.Fatalf("expected empty source file error, got: %v", err)
 	}
 
 	// 2. Non-existent source file
-	_, err = Compile(CompileOptions{SourceFile: "non_existent_seal_file.c"})
+	_, err = Compile(t.Context(), CompileOptions{SourceFile: "non_existent_seal_file.c"})
 	if err == nil || !strings.Contains(err.Error(), "not found or inaccessible") {
 		t.Fatalf("expected inaccessible file error, got: %v", err)
 	}
 
 	// 3. Directory passed as source file
 	tmpDir := t.TempDir()
-	_, err = Compile(CompileOptions{SourceFile: tmpDir})
+	_, err = Compile(t.Context(), CompileOptions{SourceFile: tmpDir})
 	if err == nil || !strings.Contains(err.Error(), "is a directory") {
 		t.Fatalf("expected directory error, got: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestSeal_Compiler_InputValidation(t *testing.T) {
 		t.Fatalf("failed to write dummy source: %v", err)
 	}
 
-	_, err = Compile(CompileOptions{
+	_, err = Compile(t.Context(), CompileOptions{
 		SourceFile: dummySrc,
 		TargetArch: "; evil_injection",
 	})
@@ -157,7 +157,7 @@ func TestSeal_Compiler_InputValidation(t *testing.T) {
 	}
 
 	// 5. Null byte in extra flags
-	_, err = Compile(CompileOptions{
+	_, err = Compile(t.Context(), CompileOptions{
 		SourceFile: dummySrc,
 		TargetArch: "amd64",
 		ExtraFlags: []string{"-O3", "-DTEST\x00INJECT"},
@@ -170,7 +170,7 @@ func TestSeal_Compiler_InputValidation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, err = CompileContext(ctx, CompileOptions{
+	_, err = Compile(ctx, CompileOptions{
 		SourceFile: dummySrc,
 		TargetArch: "amd64",
 	})

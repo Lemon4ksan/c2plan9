@@ -29,16 +29,7 @@ type CompileOptions struct {
 }
 
 // Compile compiles a C/LLVM IR source file into a temporary object file using Clang.
-func Compile(opts CompileOptions) (string, error) {
-	return CompileContext(context.Background(), opts)
-}
-
-// CompileContext compiles a C/LLVM IR source file with context cancellation and timeout support.
-func CompileContext(ctx context.Context, opts CompileOptions) (string, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
+func Compile(ctx context.Context, opts CompileOptions) (string, error) {
 	if strings.TrimSpace(opts.SourceFile) == "" {
 		return "", errors.New("source file path cannot be empty")
 	}

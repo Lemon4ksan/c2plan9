@@ -40,7 +40,7 @@ func TestC2Plan9ARM64EndToEnd(t *testing.T) {
 		t.Fatalf("failed to write C kernel: %v", err)
 	}
 
-	objPath, err := Compile(CompileOptions{
+	objPath, err := Compile(t.Context(), CompileOptions{
 		ClangPath:  "clang",
 		SourceFile: cFile,
 		TargetArch: "arm64",
@@ -99,45 +99,5 @@ func TestC2Plan9ARM64EndToEnd(t *testing.T) {
 
 	if !strings.Contains(asmStr, "RET") {
 		t.Errorf("assembly missing RET instruction, got:\n%s", asmStr)
-	}
-}
-
-func TestCleanPlan9ARM64Syntax(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"LDURBW -1(R11), R13", "MOVBU -1(R11), R13"},
-		{"LDURB -1(R11), R13", "MOVBU -1(R11), R13"},
-		{"LDURSBW -1(R11), R13", "MOVB -1(R11), R13"},
-		{"LDURSB -1(R11), R13", "MOVB -1(R11), R13"},
-		{"LDURHW -2(R11), R13", "MOVHU -2(R11), R13"},
-		{"LDURH -2(R11), R13", "MOVHU -2(R11), R13"},
-		{"LDURSHW -2(R11), R13", "MOVH -2(R11), R13"},
-		{"LDURSH -2(R11), R13", "MOVH -2(R11), R13"},
-		{"LDURW -4(R11), R13", "MOVW -4(R11), R13"},
-		{"LDURSW -4(R11), R13", "MOVW -4(R11), R13"},
-		{"LDUR -8(R11), R13", "MOVD -8(R11), R13"},
-		{"LDUR -16(R11), F0", "FMOVQ -16(R11), F0"},
-		{"STURBW R12, -1(R10)", "MOVB R12, -1(R10)"},
-		{"STURB R12, -1(R10)", "MOVB R12, -1(R10)"},
-		{"STURHW R12, -2(R10)", "MOVH R12, -2(R10)"},
-		{"STURH R12, -2(R10)", "MOVH R12, -2(R10)"},
-		{"STURW R12, -4(R10)", "MOVW R12, -4(R10)"},
-		{"STUR R12, -8(R10)", "MOVD R12, -8(R10)"},
-		{"STUR F0, -16(R10)", "FMOVQ F0, -16(R10)"},
-		{"VMAXV V0.B16, B1", "UMAXV V0.B16, B1"},
-		{"VMINV V0.B16, B1", "UMINV V0.B16, B1"},
-		{"VADDV V0.B16, B1", "ADDV V0.B16, B1"},
-		{"ISB $15", "ISB"},
-		{"B L_0014(SB)", "B L_0014"},
-		{"ADD $16, SP, SP", "ADD $16, RSP, RSP"},
-	}
-
-	for _, tc := range tests {
-		got := cleanPlan9ARM64Syntax(tc.input)
-		if got != tc.expected {
-			t.Errorf("cleanPlan9ARM64Syntax(%q) = %q, want %q", tc.input, got, tc.expected)
-		}
 	}
 }

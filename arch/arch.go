@@ -77,10 +77,10 @@ func (f DisassemblerFunc) Disassemble(code []byte, baseOffset uint64, relocs []R
 	return f(code, baseOffset, relocs)
 }
 
-// ArchBackend defines the interface for an architecture target in the c2plan9 pipeline.
+// Backend defines the interface for an architecture target in the c2plan9 pipeline.
 // Implementations encapsulate architecture-specific calling conventions, parameter registers,
 // instruction disassembly, and Plan 9 assembly generation details.
-type ArchBackend interface {
+type Backend interface {
 	// Name returns the architecture identifier (e.g. "amd64", "arm64").
 	Name() string
 
@@ -107,41 +107,41 @@ type ArchBackend interface {
 }
 
 var (
-	archRegistry = make(map[string]ArchBackend)
-	archMu       sync.RWMutex
+	registry = make(map[string]Backend)
+	mu       sync.RWMutex
 )
 
-// RegisterArch registers an ArchBackend for a given architecture name.
-func RegisterArch(backend ArchBackend) {
-	archMu.Lock()
-	defer archMu.Unlock()
+// Register registers an ArchBackend for a given architecture name.
+func Register(backend Backend) {
+	mu.Lock()
+	defer mu.Unlock()
 	if backend == nil {
 		panic("cannot register nil ArchBackend")
 	}
-	archRegistry[backend.Name()] = backend
+	registry[backend.Name()] = backend
 }
 
-// GetArch retrieves the ArchBackend for the specified architecture name.
+// Get retrieves the ArchBackend for the specified architecture name.
 // If arch is empty, it defaults to "amd64".
-func GetArch(name string) (ArchBackend, error) {
+func Get(name string) (Backend, error) {
 	if name == "" {
 		name = "amd64"
 	}
-	archMu.RLock()
-	backend, ok := archRegistry[name]
-	archMu.RUnlock()
+	mu.RLock()
+	backend, ok := registry[name]
+	mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unsupported architecture: %q", name)
 	}
 	return backend, nil
 }
 
-// RegisteredArchs returns a sorted list of registered architecture names.
-func RegisteredArchs() []string {
-	archMu.RLock()
-	defer archMu.RUnlock()
-	names := make([]string, 0, len(archRegistry))
-	for k := range archRegistry {
+// All returns a sorted list of registered architecture names.
+func All() []string {
+	mu.RLock()
+	defer mu.RUnlock()
+	names := make([]string, 0, len(registry))
+	for k := range registry {
 		names = append(names, k)
 	}
 	slices.Sort(names)
