@@ -9,6 +9,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+
+	"github.com/lemon4ksan/c2plan9/arch"
 )
 
 // ReturnType represents supported C-to-Go return types.
@@ -29,16 +31,16 @@ const (
 )
 
 // ReturnKind classifies a ReturnType into its low-level representation.
-type ReturnKind int
+type ReturnKind = arch.ReturnKind
 
 const (
-	RetNone ReturnKind = iota
-	RetInt64
-	RetInt32
-	RetFloat32
-	RetFloat64
-	RetVector128
-	RetVector256
+	RetNone      = arch.RetNone
+	RetInt64     = arch.RetInt64
+	RetInt32     = arch.RetInt32
+	RetFloat32   = arch.RetFloat32
+	RetFloat64   = arch.RetFloat64
+	RetVector128 = arch.RetVector128
+	RetVector256 = arch.RetVector256
 )
 
 // Kind returns the ReturnKind for this ReturnType.

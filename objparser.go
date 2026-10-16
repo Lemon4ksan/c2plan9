@@ -16,6 +16,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/lemon4ksan/c2plan9/arch"
 )
 
 // Symbol represents an extracted function symbol with its byte slice.
@@ -28,12 +30,7 @@ type Symbol struct {
 }
 
 // Relocation represents a relocation entry in the code referencing rodata or external symbols.
-type Relocation struct {
-	Offset   uint64 // byte offset in .text section
-	SymName  string // referenced symbol name
-	IsROData bool   // true if referencing .rodata section
-	Addend   int64  // relocation addend
-}
+type Relocation = arch.Relocation
 
 // ParsedObject contains the extracted machine code and symbol metadata.
 type ParsedObject struct {

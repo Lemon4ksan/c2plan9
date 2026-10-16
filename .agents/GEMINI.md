@@ -27,10 +27,20 @@ c2plan9/
 ├── main.go                           // CLI command entrypoint and argument routing
 ├── compiler.go                       // Clang / LLVM compiler invocation and WSL bridge
 ├── objparser.go                      // ELF, Mach-O, and PE object format decoders
-├── disasm.go                         // AMD64 machine code disassembler and Plan 9 translation
-├── arm64_disasm.go                   // ARM64 machine code disassembler and Plan 9 translation
 ├── emitter.go                        // Plan 9 assembly emitter and Go stub generator
+├── pipeline.go                       // Modular compilation and translation pipeline engine
+├── arch.go                           // Root architecture facade and re-exported types
+├── disasm.go                         // Backward-compatible AMD64 facade
+├── arm64_disasm.go                   // Backward-compatible ARM64 facade
 ├── doc.go                            // Package documentation
+├── arch/                             // Architecture subsystem
+│   ├── arch.go                       // ArchBackend interface, registry, and shared types
+│   ├── amd64/                        // AMD64 backend and machine code disassembler
+│   │   ├── backend.go
+│   │   └── disasm.go
+│   └── arm64/                        // ARM64 backend and machine code disassembler
+│       ├── backend.go
+│       └── disasm.go
 └── .agents/                          // AI assistant guidelines and rules
 ```
 
